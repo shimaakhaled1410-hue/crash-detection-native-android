@@ -7,7 +7,11 @@ import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Bundle
 
-class SpeedTracker(private val context: Context) : LocationListener {
+interface SpeedChangeListener {
+    fun onSpeedUpdated(speedKmh: Float, isVehicleMoving: Boolean)
+}
+
+class SpeedTracker(context: Context) : LocationListener {
 
     private val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
 
@@ -18,15 +22,21 @@ class SpeedTracker(private val context: Context) : LocationListener {
         private set
 
     private var previousSpeedKmh: Float = 0f
+    private var speedChangeListener: SpeedChangeListener? = null
+
+    fun setSpeedChangeListener(listener: SpeedChangeListener) {
+        this.speedChangeListener = listener
+    }
 
     @SuppressLint("MissingPermission")
     fun startTracking() {
         val isGpsEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
         if (isGpsEnabled) {
+            // Low-power interval when idle: 2000ms with 2m distance constraint
             locationManager.requestLocationUpdates(
                 LocationManager.GPS_PROVIDER,
-                1000L,
-                1f,
+                2000L,
+                2f,
                 this
             )
         }
@@ -39,9 +49,13 @@ class SpeedTracker(private val context: Context) : LocationListener {
     override fun onLocationChanged(location: Location) {
         if (location.hasSpeed()) {
             previousSpeedKmh = currentSpeedKmh
-            // location.speed is in m/s; multiply by 3.6 to convert to km/h
             currentSpeedKmh = location.speed * 3.6f
+            
+            val wasMoving = isVehicleSpeedConfirmed
             isVehicleSpeedConfirmed = currentSpeedKmh >= 25f
+
+            // Trigger callback if driving state changed or speed updated
+            speedChangeListener?.onSpeedUpdated(currentSpeedKmh, isVehicleSpeedConfirmed)
         }
     }
 
