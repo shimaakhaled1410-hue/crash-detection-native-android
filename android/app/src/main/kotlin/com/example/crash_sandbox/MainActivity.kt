@@ -1,26 +1,33 @@
 package com.example.crash_sandbox
 
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import com.example.crash_sandbox.sensor.AccelerometerSensor
 import com.example.crash_sandbox.sensor.GyroscopeSensor
 import com.example.crash_sandbox.sensor.SensorSnapshot
 import io.flutter.embedding.android.FlutterActivity
+import kotlin.math.abs
 import kotlin.math.sqrt
 
 class MainActivity : FlutterActivity() {
 
     private val MY_TAG = "CrashSensorTest"
-    
-    private val WINDOW_SIZE = 60
-    private val sensorBuffer = ArrayDeque<SensorSnapshot>(WINDOW_SIZE)
+
+    private val PRE_IMPACT_WINDOW_SIZE = 60
+    private val preImpactBuffer = ArrayDeque<SensorSnapshot>(PRE_IMPACT_WINDOW_SIZE)
+
+    private val postImpactReadings = mutableListOf<SensorSnapshot>()
+    private var isEvaluatingPostImpact = false
+    private var isCooldownActive = false
 
     private var lastGx = 0f
     private var lastGy = 0f
     private var lastGz = 0f
     private var lastGyroMag = 0.0
 
-    private var isBufferFullLogged = false
+    private val handler = Handler(Looper.getMainLooper())
 
     private lateinit var accelerometerSensor: AccelerometerSensor
     private lateinit var gyroscopeSensor: GyroscopeSensor
@@ -64,10 +71,15 @@ class MainActivity : FlutterActivity() {
                     gyroMagnitude = lastGyroMag
                 )
 
-                addToBuffer(snapshot)
+                addToPreImpactBuffer(snapshot)
 
-                if (accMagnitude > 20.0) {
-                    onImpactDetected(accMagnitude)
+                if (isEvaluatingPostImpact) {
+                    postImpactReadings.add(snapshot)
+                    return@setOnSensorValuesChangedListener
+                }
+
+                if (!isCooldownActive && accMagnitude > 25.0) {
+                    startPostImpactEvaluation(accMagnitude)
                 }
             }
             accelerometerSensor.startListening()
@@ -75,31 +87,69 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun addToBuffer(snapshot: SensorSnapshot) {
-        if (sensorBuffer.size >= WINDOW_SIZE) {
-            sensorBuffer.removeFirst()
-            if (!isBufferFullLogged) {
-                Log.i(MY_TAG, "BUFFER READY: 60 snapshots captured! Sliding window active.")
-                isBufferFullLogged = true
-            }
+    private fun addToPreImpactBuffer(snapshot: SensorSnapshot) {
+        if (preImpactBuffer.size >= PRE_IMPACT_WINDOW_SIZE) {
+            preImpactBuffer.removeFirst()
         }
-        sensorBuffer.addLast(snapshot)
+        preImpactBuffer.addLast(snapshot)
     }
 
-    private fun onImpactDetected(impactMagnitude: Double) {
-        Log.w(MY_TAG, "IMPACT TRIGGERED! Magnitude: $impactMagnitude m/s²")
-        Log.i(MY_TAG, "AI Window Ready: ${sensorBuffer.size} snapshots available.")
-        
-        val oldest = sensorBuffer.firstOrNull()
-        val latest = sensorBuffer.lastOrNull()
-        if (oldest != null && latest != null) {
-            val duration = latest.timestamp - oldest.timestamp
-            Log.d(MY_TAG, "Pre-impact window duration: ${duration}ms")
+    private fun startPostImpactEvaluation(impactMagnitude: Double) {
+        isEvaluatingPostImpact = true
+        postImpactReadings.clear()
+
+        Log.w(MY_TAG, "🚨 IMPACT DETECTED ($impactMagnitude m/s²)! Monitoring stillness for 3 seconds...")
+
+        handler.postDelayed({
+            evaluateStillness()
+        }, 3000)
+    }
+
+    private fun evaluateStillness() {
+        isEvaluatingPostImpact = false
+        isCooldownActive = true
+
+        if (postImpactReadings.isEmpty()) {
+            resetCooldown(5000)
+            return
         }
+
+        var maxGyroInWindow = 0.0
+        var totalAccVariation = 0.0
+
+        for (snapshot in postImpactReadings) {
+            if (snapshot.gyroMagnitude > maxGyroInWindow) {
+                maxGyroInWindow = snapshot.gyroMagnitude
+            }
+            totalAccVariation += abs(snapshot.accMagnitude - 9.8)
+        }
+
+        val avgAccVariation = totalAccVariation / postImpactReadings.size
+
+        Log.i(MY_TAG, "🔍 Analysis: Avg Acc Deviation = $avgAccVariation m/s², Max Gyro = $maxGyroInWindow rad/s")
+
+        val isPhoneStill = maxGyroInWindow < 1.0 && avgAccVariation < 2.0
+
+        if (isPhoneStill) {
+            Log.e(MY_TAG, "🔴 CRASH CONFIRMED: High impact followed by stillness! Emergency sequence ready.")
+        } else {
+            Log.d(MY_TAG, "🟢 FALSE ALARM: Movement detected after impact. Dismissed.")
+        }
+
+        resetCooldown(7000)
+    }
+
+    private fun resetCooldown(delayMs: Long) {
+        Log.d(MY_TAG, "⏳ Cooldown active ($delayMs ms). Suppressing duplicate triggers.")
+        handler.postDelayed({
+            isCooldownActive = false
+            Log.i(MY_TAG, "✅ Cooldown expired. Trigger re-armed.")
+        }, delayMs)
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        handler.removeCallbacksAndMessages(null)
         accelerometerSensor.stopListening()
         gyroscopeSensor.stopListening()
     }
