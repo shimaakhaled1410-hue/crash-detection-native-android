@@ -9,5 +9,8 @@ data class SensorSnapshot(
     val gx: Float = 0f,
     val gy: Float = 0f,
     val gz: Float = 0f,
-    val gyroMagnitude: Double = 0.0
+    val gyroMagnitude: Double = 0.0,
+    val worldHorizontalAcc: Double = 0.0,
+    val worldVerticalAcc: Double = 0.0,
+    val pressureHpa: Float = 0f
 )
