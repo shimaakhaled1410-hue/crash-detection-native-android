@@ -6,11 +6,11 @@ import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 
-abstract class AndroidSensor (
-    private val context:Context,
+abstract class AndroidSensor(
+    private val context: Context,
     private val sensorFeature: String,
     sensorType: Int
-): MeasurableSensor(sensorType ), SensorEventListener {
+) : MeasurableSensor(sensorType), SensorEventListener {
 
     override val doesSensorExist: Boolean
         get() = context.packageManager.hasSystemFeature(sensorFeature)
@@ -18,22 +18,23 @@ abstract class AndroidSensor (
     private lateinit var sensorManager: SensorManager
     private var sensor: Sensor? = null
 
-    override fun startListening(){
-        if(doesSensorExist) 
-           return  
-           
-        if(!::sensorManager.isInitialized && sensor==null){
-            sensorManager = context.getSystemService(SensorManager::class.java) as SensorManager
+    override fun startListening() {
+        if (!doesSensorExist) {
+            return
+        }
+
+        if (!::sensorManager.isInitialized && sensor == null) {
+            sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
             sensor = sensorManager.getDefaultSensor(sensorType)
         }
+
         sensor?.let {
             sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL)
         }
-
     }
 
-    override fun stopListening(){
-       if (!doesSensorExist || !::sensorManager.isInitialized) {
+    override fun stopListening() {
+        if (!doesSensorExist || !::sensorManager.isInitialized) {
             return
         }
         sensorManager.unregisterListener(this)
@@ -45,9 +46,11 @@ abstract class AndroidSensor (
         }
 
         if (event?.sensor?.type == sensorType) {
-            onSensorValuesChanged?.invoke(event.values.toList())
+            event.values?.let { vals ->
+                onSensorValuesChanged?.invoke(vals.toList())
+            }
         }
     }
-    override fun onAccuracyChanged(p0: Sensor?, p1: Int) = Unit
 
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
 }
