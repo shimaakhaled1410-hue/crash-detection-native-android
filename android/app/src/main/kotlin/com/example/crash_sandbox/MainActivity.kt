@@ -21,11 +21,14 @@ class MainActivity : FlutterActivity() {
     private val postImpactReadings = mutableListOf<SensorSnapshot>()
     private var isEvaluatingPostImpact = false
     private var isCooldownActive = false
+    private var impactTimestamp: Long = 0
 
     private var lastGx = 0f
     private var lastGy = 0f
     private var lastGz = 0f
     private var lastGyroMag = 0.0
+
+    private var lastLiveLogTime: Long = 0
 
     private val handler = Handler(Looper.getMainLooper())
 
@@ -55,12 +58,14 @@ class MainActivity : FlutterActivity() {
 
         if (accelerometerSensor.doesSensorExist) {
             accelerometerSensor.setOnSensorValuesChangedListener { values ->
+                val currentTime = System.currentTimeMillis()
                 val ax = values[0]
                 val ay = values[1]
                 val az = values[2]
                 val accMagnitude = sqrt((ax * ax + ay * ay + az * az).toDouble())
 
                 val snapshot = SensorSnapshot(
+                    timestamp = currentTime,
                     ax = ax,
                     ay = ay,
                     az = az,
@@ -75,11 +80,17 @@ class MainActivity : FlutterActivity() {
 
                 if (isEvaluatingPostImpact) {
                     postImpactReadings.add(snapshot)
+
+                    if (currentTime - lastLiveLogTime >= 500) {
+                        val elapsed = currentTime - impactTimestamp
+                        Log.d(MY_TAG, "⏱️ Monitoring +${elapsed}ms -> Acc: ${String.format("%.2f", accMagnitude)} m/s² | Gyro: ${String.format("%.2f", lastGyroMag)} rad/s")
+                        lastLiveLogTime = currentTime
+                    }
                     return@setOnSensorValuesChangedListener
                 }
 
                 if (!isCooldownActive && accMagnitude > 25.0) {
-                    startPostImpactEvaluation(accMagnitude)
+                    startPostImpactEvaluation(accMagnitude, currentTime)
                 }
             }
             accelerometerSensor.startListening()
@@ -94,46 +105,50 @@ class MainActivity : FlutterActivity() {
         preImpactBuffer.addLast(snapshot)
     }
 
-    private fun startPostImpactEvaluation(impactMagnitude: Double) {
+    private fun startPostImpactEvaluation(impactMagnitude: Double, timestamp: Long) {
         isEvaluatingPostImpact = true
+        impactTimestamp = timestamp
+        lastLiveLogTime = timestamp
         postImpactReadings.clear()
 
-        Log.w(MY_TAG, "🚨 IMPACT DETECTED ($impactMagnitude m/s²)! Monitoring stillness for 3 seconds...")
+        Log.w(MY_TAG, "🚨 IMPACT DETECTED (${String.format("%.2f", impactMagnitude)} m/s²)! Settling (1.8s) + Stillness Analysis (2.2s)...")
 
         handler.postDelayed({
             evaluateStillness()
-        }, 3000)
+        }, 4000)
     }
 
     private fun evaluateStillness() {
         isEvaluatingPostImpact = false
         isCooldownActive = true
 
-        if (postImpactReadings.isEmpty()) {
+        val settlingCutoff = impactTimestamp + 1800
+        val stillnessSamples = postImpactReadings.filter { it.timestamp >= settlingCutoff }
+
+        if (stillnessSamples.isEmpty()) {
             resetCooldown(5000)
             return
         }
 
-        var maxGyroInWindow = 0.0
+        var totalGyro = 0.0
         var totalAccVariation = 0.0
 
-        for (snapshot in postImpactReadings) {
-            if (snapshot.gyroMagnitude > maxGyroInWindow) {
-                maxGyroInWindow = snapshot.gyroMagnitude
-            }
+        for (snapshot in stillnessSamples) {
+            totalGyro += snapshot.gyroMagnitude
             totalAccVariation += abs(snapshot.accMagnitude - 9.8)
         }
 
-        val avgAccVariation = totalAccVariation / postImpactReadings.size
+        val avgGyro = totalGyro / stillnessSamples.size
+        val avgAccVariation = totalAccVariation / stillnessSamples.size
 
-        Log.i(MY_TAG, "🔍 Analysis: Avg Acc Deviation = $avgAccVariation m/s², Max Gyro = $maxGyroInWindow rad/s")
+        Log.i(MY_TAG, "🔍 Analysis (Post-Settling): Samples = ${stillnessSamples.size}, Avg Acc Dev = ${String.format("%.2f", avgAccVariation)} m/s², Avg Gyro = ${String.format("%.2f", avgGyro)} rad/s")
 
-        val isPhoneStill = maxGyroInWindow < 1.0 && avgAccVariation < 2.0
+        val isPhoneStill = avgGyro < 1.2 && avgAccVariation < 2.0
 
         if (isPhoneStill) {
-            Log.e(MY_TAG, "🔴 CRASH CONFIRMED: High impact followed by stillness! Emergency sequence ready.")
+            Log.e(MY_TAG, "🔴 CRASH CONFIRMED: High impact followed by verified stillness! Triggering emergency sequence.")
         } else {
-            Log.d(MY_TAG, "🟢 FALSE ALARM: Movement detected after impact. Dismissed.")
+            Log.d(MY_TAG, "🟢 FALSE ALARM: Continuous movement detected post-impact. Dismissed.")
         }
 
         resetCooldown(7000)
